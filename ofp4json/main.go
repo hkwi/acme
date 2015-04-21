@@ -120,9 +120,9 @@ func (self JsonPort) Ingress() <-chan gopenflow.Frame {
 	return self.ingress
 }
 
-func (self JsonPort) Egress(pkt gopenflow.Frame) error {
+func (self *JsonPort) Egress(pkt gopenflow.Frame) error {
 	if !isJson(pkt.Oob) {
-		fmt.Errorf("not a json packet")
+		return fmt.Errorf("not a json packet")
 	}
 	for _, c := range self.sockets {
 		c.Write(pkt.Data)
@@ -178,24 +178,27 @@ func init() {
 }
 
 func isJson(seq []byte) bool {
-	var x oxm.Oxm
-	var hdr oxm.Header
 	oxms := oxm.Oxm(seq).Iter()
 
-	x = oxms[0]
-	hdr = x.Header()
-	if hdr.Type() != oxm.OFPXMT_OFB_PACKET_TYPE || binary.BigEndian.Uint16(x[4:]) != 0 || binary.BigEndian.Uint16(x[6:]) != oxm.OFPHTO_OXM_EXPERIMENTER {
+	hit := false
+	for _, x := range oxms {
+		if x.Header().Type() == oxm.OXM_OF_PACKET_TYPE && binary.BigEndian.Uint16(x[4:]) == 0 && binary.BigEndian.Uint16(x[6:]) == oxm.OFPHTO_OXM_EXPERIMENTER {
+			hit = true
+		}
+	}
+	if !hit {
 		return false
 	}
 
-	x = oxms[1]
-	hdr = x.Header()
-	if hdr.Class() == oxm.OFPXMC_EXPERIMENTER &&
-		binary.BigEndian.Uint32(x[4:]) == ACME_EXPERIMENTER_ID &&
-		hdr.Field() == ACME_OXM_FIELD_BASIC &&
-		binary.BigEndian.Uint16(x[8:]) == ACMEOXM_BASIC_PACKET_TYPE &&
-		x[10] == ACMEHTB_JSON {
-		return true
+	for _, x := range oxms {
+		hdr := x.Header()
+		if hdr.Class() == oxm.OFPXMC_EXPERIMENTER &&
+			binary.BigEndian.Uint32(x[4:]) == ACME_EXPERIMENTER_ID &&
+			hdr.Field() == ACME_OXM_FIELD_BASIC &&
+			binary.BigEndian.Uint16(x[8:]) == ACMEOXM_BASIC_PACKET_TYPE &&
+			x[10] == ACMEHTB_JSON {
+			return true
+		}
 	}
 	return false
 }
@@ -241,6 +244,7 @@ func NewJsonPort(path string) *JsonPort {
 					log.Print(err)
 					break
 				} else {
+					port.sockets = append(port.sockets, con)
 					go func() {
 						junk := make([]byte, 1500)
 						buf := bytes.NewBuffer(junk)
@@ -321,7 +325,7 @@ func (self AcmeOxmHandler) Parse(seq []byte) map[ofp4sw.OxmKey]ofp4sw.OxmPayload
 				hdr.Field(),
 				binary.BigEndian.Uint16(x[8:]),
 			}
-			ret[k] = x[10:]
+			ret[k] = ofp4sw.OxmValueMask{Value: x[10:]}
 		}
 	}
 	return ret
